@@ -163,3 +163,7 @@ cython_debug/
 
 # Logs
 logs/
+
+
+# Nvim tags file
+tags
