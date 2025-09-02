@@ -4,10 +4,10 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.patches import Patch
 import gymnasium as gym
-from gymnasium import spaces
-from gymnasium.wrappers import TimeLimit
+from gymnasium import spaces, Wrapper
+from gymnasium.wrappers import TimeLimit, NormalizeReward
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.callbacks import BaseCallback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import torch as th
@@ -204,6 +204,25 @@ class ParallelGraphMDPVisualizer:
         
         # Draw node labels
         nx.draw_networkx_labels(self.graph, pos, font_size=font_size, ax=ax)
+
+
+        # Calculate transition probabilities for state-action pairs
+        transition_probs = {}
+        for state in self.graph.nodes():
+            # Count total transitions from this state for each action
+            action_counts = {}
+            for u, v, data in self.graph.edges(data=True):
+                if u == state:
+                    action = data['action']
+                    action_counts[action] = action_counts.get(action, 0) + 1
+
+            # Calculate probabilities
+            for u, v, data in self.graph.edges(data=True):
+                if u == state:
+                    action = data['action']
+                    total = action_counts[action]
+                    prob = 1.0 / total if total > 0 else 0.0
+                    transition_probs[(u, v, action)] = prob
         
         # Draw edges with colors based on action
         edge_colors = []
@@ -215,13 +234,13 @@ class ParallelGraphMDPVisualizer:
         nx.draw_networkx_edges(self.graph, pos, edge_color=edge_colors, 
                               arrows=True, arrowsize=20, ax=ax)
         
-        # Draw edge labels (action and reward)
+        # Draw edge labels (probability, action and reward)
         edge_labels = {}
         for u, v, data in self.graph.edges(data=True):
             action = data['action']
             reward = data['reward']
-            done = data['done']
-            edge_labels[(u, v)] = f"a:{action}\nr:{reward:.1f}\n{'T' if done else 'F'}"
+            prob = transition_probs.get((u,v,action), 0.0)
+            edge_labels[(u, v)] = f"a:{action}\nr:{reward:.1f}\np:{prob:.2f}"
             
         nx.draw_networkx_edge_labels(self.graph, pos, edge_labels=edge_labels, 
                                     font_size=font_size-2, ax=ax)
@@ -298,19 +317,62 @@ class ParallelGraphMDPVisualizer:
         return fig
 
 
+class CustomRewardWrapper(Wrapper):
+    """Wrapper to modify Frozen Lake rewards: -1 for all tiles, +100 for goal."""
+    
+    def __init__(self, env):
+        super().__init__(env)
+        self.n_states = env.observation_space.n
+        self.desc = env.desc if hasattr(env, 'desc') else None
+    
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        if terminated and obs == self.n_states - 1:  
+            reward = 1.0
+        
+        else:
+            reward = 0.0  
+        
+        return obs, reward, terminated, truncated, info
+    
+    def is_final_state(self, state):
+        """Check if state is the goal state."""
+        return state == self.n_states - 1
+    
+    def is_hole_state(self, state):
+        """Check if state is a hole."""
+        if self.desc is not None:
+            row = state // int(np.sqrt(self.n_states))
+            col = state % int(np.sqrt(self.n_states))
+            return self.desc[row][col] == b'H'
+        return False
+
+
+
+def create_config(env, total_timesteps=50000):
+    """Create a configuration dictionary for the experiment."""
+    return {
+        "environment": {
+            "name": "CustomFrozenLake",
+            "map_name": "4x4",
+            "n_states": env.n_states,
+            "n_actions": env.action_space.n,
+            "is_slippery": False,
+            "reward_structure": "Regular: -1, Goal: +100"
+        },
+        # ... rest of the config remains the same
+    }
+
 
 def make_env():
     """Create a function that returns a new environment instance."""
-    # Create the base environment
     env = gym.make('FrozenLake-v1', is_slippery=True)
-    # Add TimeLimit wrapper with proper arguments
     env = TimeLimit(env, max_episode_steps=100)
-    return env
+    return CustomRewardWrapper(env)
 
-# Create and train an RL agent with policy tracking
 def main():
-    # Create environment with TimeLimit wrapper
-    env = TimeLimit(gym.make('FrozenLake-v1', is_slippery=True, render_mode='human'), max_episode_steps=100)
+    env = TimeLimit(CustomRewardWrapper(gym.make("FrozenLake-v1", is_slippery=True, render_mode="human")), max_episode_steps=100)
     
     # Create visualizer
     visualizer = ParallelGraphMDPVisualizer(env)
@@ -330,7 +392,9 @@ def main():
     n_envs = 8  # Number of parallel environments
     
     # Use DummyVecEnv for simplicity
-    vec_env = DummyVecEnv([make_env for _ in range(n_envs)])
+    vec_env = VecNormalize(DummyVecEnv([make_env for _ in range(n_envs)]), norm_obs=False)
+
+    vec_env.seed(69)
     
     # Create and train model with GPU acceleration
     policy_kwargs = dict(
@@ -351,12 +415,13 @@ def main():
         gae_lambda=0.95,
         clip_range=0.2,
         ent_coef=0.01,
-        device='cpu'
+        device='cpu',
+        seed=69,
     )
     
     # Train the model
     print("Training model with parallel environments...")
-    model.learn(total_timesteps=35000, callback=callback, progress_bar=True)
+    model.learn(total_timesteps=60000, callback=callback, progress_bar=True)
     
     # Check if we have any policies saved
     if not visualizer.policies:
@@ -387,7 +452,7 @@ def main():
     # Test the final policy
     print("Testing final policy:")
     obs, _ = env.reset()
-    for i in range(10):
+    for i in range(25):
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, _ = env.step(int(action))
         print(f"Step {i}: State={obs}, Action={action}, Reward={reward}, Terminated={terminated}")
