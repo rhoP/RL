@@ -55,11 +55,6 @@ def main():
     print("Training model with parallel environments...")
     model.learn(total_timesteps=70000, callback=callback, progress_bar=True)
 
-    backward_fig = backward_builder.plot_backward_graph()
-    if backward_fig:
-        plt.savefig('plots/backward_graph.png', dpi=300, bbox_inches='tight')
-        plt.plot()
-
     # Test the final policy
     print("Testing final policy:")
 
