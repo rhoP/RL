@@ -167,3 +167,8 @@ logs/
 
 # Nvim tags file
 tags
+
+
+# Pickle and zip files
+*.pkl
+*.zip

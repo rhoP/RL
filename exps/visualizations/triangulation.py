@@ -272,8 +272,9 @@ def train_ppo_and_collect_trajectories(env_name="Pendulum-v1", total_timesteps=5
 def collect_additional_trajectories(model, storage, env_name, num_trajectories=50):
     """Collect additional trajectories using the trained policy"""
     env = gym.make(env_name, continuous=True)
+    collected = 0
     
-    for episode in range(num_trajectories):
+    while collected < num_trajectories:
         state, _ = env.reset()
         states, actions, rewards, dones = [], [], [], []
         
@@ -290,9 +291,13 @@ def collect_additional_trajectories(model, storage, env_name, num_trajectories=5
             state = next_state
             if done:
                 break
+
+
+        # Ignore weak trajectories
+        if np.sum(rewards) > 200:
+            storage.add_trajectory(states, actions, rewards, dones)
+            collected += 1
         
-        storage.add_trajectory(states, actions, rewards, dones)
-    
     env.close()
 
 def demonstrate_with_lunar_lander():
