@@ -35,6 +35,38 @@ class RandomizedPCA:
 
 
 
+
+class SubsampledPCA:
+    def __init__(self, n_components=2, subsample_size=10000, random_state=42):
+        self.n_components = n_components
+        self.subsample_size = subsample_size
+        self.random_state = random_state
+        self.pca = PCA(n_components=n_components)
+        self.fitted_on_subsample = None
+    
+    def fit_transform_fast(self, data):
+        """Fit on subsample, transform all data"""
+        if len(data) > self.subsample_size:
+            # Subsample for fitting
+            rng = np.random.RandomState(self.random_state)
+            indices = rng.choice(len(data), self.subsample_size, replace=False)
+            subsample = data[indices]
+            
+            print(f"Fitting PCA on {len(subsample)} subsample points...")
+            self.pca.fit(subsample)
+            self.fitted_on_subsample = subsample
+            
+            # Transform all data
+            print(f"Transforming all {len(data)} points...")
+            return self.pca.transform(data)
+        else:
+            # If data is small, use regular PCA
+            return self.pca.fit_transform(data)
+
+
+
+
+
 class RLTrajectoryStorage:
     def __init__(self, max_trajectories=1000):
         self.max_trajectories = max_trajectories
@@ -548,8 +580,8 @@ class FastMeshPropagator(MeshPropagator):
             right_leg = states[:, 7]
             
             # Extract action components
-            main_engine = actions[:, 0]  # Main engine power
-            orientation = actions[:, 1]  # Orientation control
+            main_engine = actions[0]  # Main engine power
+            orientation = actions[1]  # Orientation control
             
             # Constants
             gravity = -0.05
@@ -916,7 +948,7 @@ def main():
     # Generate mesh around trajectories
     mesh_states = propagator.generate_mesh_around_trajectories(
         storage, 
-        n_points_per_dim=8,  # You can increase this with fast propagation
+        n_points_per_dim=4,  # You can increase this with fast propagation
         padding=0.2
     )
     
