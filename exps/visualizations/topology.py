@@ -40,7 +40,7 @@ except ImportError:
 # ============================================================================
 
 
-class RLTrajectoryStorage:
+class TrajectoryContainer:
     """Storage container for complete RL trajectories"""
 
     def __init__(self, max_trajectories=1000):
@@ -104,9 +104,9 @@ class RLTrajectoryStorage:
                 else len(actions_array[0])
             )
             # Determine if continuous based on action dimension
-            self.is_continuous = (
-                self.action_dim > 1 or self.action_dim == 2
-            )  # Lunar Lander continuous has 2 actions
+            # self.is_continuous = (
+            #    self.action_dim > 1 or self.action_dim == 2
+            # )  # Lunar Lander continuous has 2 actions
 
         self.trajectories.append(trajectory)
 
@@ -194,7 +194,7 @@ class RLTrajectoryStorage:
 class TrajectoryCollectorCallback(BaseCallback):
     """Callback to collect trajectories during PPO training"""
 
-    def __init__(self, storage: RLTrajectoryStorage, verbose=0):
+    def __init__(self, storage: TrajectoryContainer, verbose=0):
         super(TrajectoryCollectorCallback, self).__init__(verbose)
         self.storage = storage
         self.current_trajectory = {
@@ -228,7 +228,7 @@ def collect_trajectories_from_policy(
     num_trajectories: int = 50,
     max_steps: int = 1000,
     continuous: bool = True,
-) -> RLTrajectoryStorage:
+) -> TrajectoryContainer:
     """
     Collect trajectories using a trained policy.
 
@@ -239,8 +239,9 @@ def collect_trajectories_from_policy(
         max_steps: Maximum steps per trajectory
         continuous: Whether to use continuous actions
     """
-    storage = RLTrajectoryStorage(max_trajectories=num_trajectories)
-    env = gym.make(env_name, continuous=continuous)
+    storage = TrajectoryContainer(max_trajectories=num_trajectories)
+    # env = gym.make(env_name, continuous=continuous)
+    env = gym.make(env_name)
 
     print(f"Collecting {num_trajectories} trajectories...")
 
@@ -258,7 +259,7 @@ def collect_trajectories_from_policy(
         step = 0
 
         while not (terminated or truncated) and step < max_steps:
-            action, _ = model.predict(state, deterministic=True)
+            action, _ = model.predict(state, deterministic=False)
             next_state, reward, terminated, truncated, info = env.step(action)
 
             states.append(next_state)
@@ -280,7 +281,7 @@ def collect_trajectories_from_policy(
     env.close()
 
     stats = storage.get_trajectory_statistics()
-    print(f"\nCollection complete:")
+    print(f"\n Collection complete:")
     print(f"  Average reward: {stats['avg_reward']:.2f}")
     print(f"  Best reward: {stats['max_reward']:.2f}")
     print(f"  Average length: {stats['avg_length']:.1f}")
@@ -289,15 +290,17 @@ def collect_trajectories_from_policy(
 
 
 # ============================================================================
-# 3. PPO TRAINING
+# 3. TRAINING
 # ============================================================================
 
 
-def train_ppo_lunar_lander(
+def train(
+    model,
+    env_name,
     total_timesteps: int = 100000,
     continuous: bool = True,
-    save_path: str = "ppo_lunar_lander",
-) -> PPO:
+    save_path: str = "ppo_ll",
+):
     """
     Train a PPO agent on Lunar Lander.
 
@@ -306,17 +309,14 @@ def train_ppo_lunar_lander(
         continuous: Whether to use continuous actions
         save_path: Path to save the trained model
     """
-    print("=" * 50)
-    print(
-        f"TRAINING PPO ON LUNAR LANDER ({'CONTINUOUS' if continuous else 'DISCRETE'})"
-    )
-    print("=" * 50)
+    print(f"TRAINING {model} ON {env_name}")
 
     # Create environment
-    env = gym.make("LunarLander-v3", continuous=continuous)
+    # env = gym.make("LunarLander-v3", continuous=continuous)
+    env = gym.make(env_name)
     env = DummyVecEnv([lambda: env])
 
-    # Create PPO model
+    # Create model
     model = SAC(
         "MlpPolicy",
         env,
@@ -372,11 +372,8 @@ class TrajectoryPCA:
         self.state_dim = None
         self.action_dim = None
 
-    def fit(self, trajectory_storage: RLTrajectoryStorage):
+    def fit(self, trajectory_storage: TrajectoryContainer):
         """Fit PCA models to trajectories"""
-        print("\n" + "=" * 50)
-        print("FITTING PCA TO TRAJECTORIES")
-        print("=" * 50)
 
         trajectories = list(trajectory_storage.trajectories)
         if not trajectories:
@@ -472,7 +469,7 @@ class TrajectoryPCA:
         }
 
     def compress_all_trajectories(
-        self, trajectory_storage: RLTrajectoryStorage
+        self, trajectory_storage: TrajectoryContainer
     ) -> List[Dict[str, Any]]:
         """Compress all trajectories"""
         compressed_trajectories = []
@@ -497,6 +494,7 @@ class TrajectoryManifoldVisualizer:
     def plot_2d_manifold(
         self,
         compressed_trajectories: List[Dict[str, Any]],
+        original_trajectories: List[Dict[str, Any]],
         color_by: str = "reward",
         alpha: float = 0.7,
         linewidth: float = 1.5,
@@ -507,57 +505,190 @@ class TrajectoryManifoldVisualizer:
         """
         self.fig, self.ax = plt.subplots(figsize=(14, 10))
 
-        # Prepare colors
-        if color_by == "reward":
-            rewards = [t["total_reward"] for t in compressed_trajectories]
-            norm_rewards = (rewards - np.min(rewards)) / (
-                np.max(rewards) - np.min(rewards) + 1e-10
-            )
-            colors = plt.cm.viridis(norm_rewards)
-            color_label = "Total Reward"
-        elif color_by == "length":
-            lengths = [t["length"] for t in compressed_trajectories]
-            norm_lengths = (lengths - np.min(lengths)) / (
-                np.max(lengths) - np.min(lengths) + 1e-10
-            )
-            colors = plt.cm.plasma(norm_lengths)
-            color_label = "Trajectory Length"
-        else:
-            colors = plt.cm.Set3(np.linspace(0, 1, len(compressed_trajectories)))
-            color_label = "Trajectory Index"
+        # reward colormap
+        reward_cmap = plt.cm.viridis
 
-        # Plot each trajectory
-        for i, traj in enumerate(compressed_trajectories):
-            states = traj["compressed_states"]
-            actions = traj["compressed_actions"]
+        # Track global min/max
+        all_rewards = []
+        for traj in original_trajectories:
+            if "rewards" in traj:
+                all_rewards.extend(traj["rewards"])
+
+        if not all_rewards:
+            print("Reward data unavailable, plotting by total reward")
+
+            # Prepare colors
+            if color_by == "reward":
+                rewards = [t["total_reward"] for t in compressed_trajectories]
+                norm_rewards = (rewards - np.min(rewards)) / (
+                    np.max(rewards) - np.min(rewards) + 1e-10
+                )
+                colors = plt.cm.viridis(norm_rewards)
+                color_label = "Total Reward"
+            elif color_by == "length":
+                lengths = [t["length"] for t in compressed_trajectories]
+                norm_lengths = (lengths - np.min(lengths)) / (
+                    np.max(lengths) - np.min(lengths) + 1e-10
+                )
+                colors = plt.cm.plasma(norm_lengths)
+                color_label = "Trajectory Length"
+            else:
+                colors = plt.cm.Set3(np.linspace(0, 1, len(compressed_trajectories)))
+                color_label = "Trajectory Index"
+
+            # Plot each trajectory
+            for i, traj in enumerate(compressed_trajectories):
+                states = traj["compressed_states"]
+                actions = traj["compressed_actions"]
+
+                # Extract coordinates
+                if states.shape[1] == 1:
+                    # 1D state compression
+                    x = states[:, 0]
+                    y = (
+                        actions[:, 0]
+                        if actions.shape[1] == 1
+                        else np.zeros(len(states))
+                    )
+                else:
+                    # 2D state compression - use first component vs action
+                    x = states[:, 0]
+                    y = (
+                        actions[:, 0]
+                        if actions.shape[1] >= 1
+                        else np.zeros(len(states))
+                    )
+
+                # Plot trajectory
+                self.ax.plot(
+                    x,
+                    y,
+                    alpha=alpha,
+                    linewidth=linewidth,
+                    color=colors[i] if color_by != "index" else colors[i],
+                )
+
+                # Add start and end markers
+                if show_start_end:
+                    if i == 0:  # Only label once
+                        self.ax.scatter(
+                            x[0],
+                            y[0],
+                            color="green",
+                            s=80,
+                            zorder=5,
+                            marker="o",
+                            label="Start",
+                        )
+                        self.ax.scatter(
+                            x[-1],
+                            y[-1],
+                            color="red",
+                            s=80,
+                            zorder=5,
+                            marker="s",
+                            label="End",
+                        )
+                    else:
+                        self.ax.scatter(
+                            x[0], y[0], color="green", s=30, zorder=5, marker="o"
+                        )
+                        self.ax.scatter(
+                            x[-1], y[-1], color="red", s=30, zorder=5, marker="s"
+                        )
+
+            self.ax.set_xlabel("Compressed State (PC1)", fontsize=12)
+            self.ax.set_ylabel("Compressed Action", fontsize=12)
+            self.ax.set_title(
+                "2D Trajectory Manifold: State vs Action",
+                fontsize=14,
+                fontweight="bold",
+            )
+            self.ax.legend(fontsize=10)
+            self.ax.grid(True, alpha=0.3)
+
+            # Add colorbar
+            if color_by in ["reward", "length"]:
+                sm = plt.cm.ScalarMappable(
+                    cmap=plt.cm.viridis if color_by == "reward" else plt.cm.plasma
+                )
+                sm.set_array(rewards if color_by == "reward" else lengths)
+                cbar = plt.colorbar(sm, ax=self.ax)
+                cbar.set_label(color_label, fontsize=12)
+
+            plt.tight_layout()
+            return self.fig, self.ax
+
+        global_reward_min = np.min(all_rewards)
+        global_reward_max = np.max(all_rewards)
+
+        for traj_idx, (compressed_traj, original_traj) in enumerate(
+            zip(compressed_trajectories, original_trajectories)
+        ):
+            states = compressed_traj["compressed_states"]
+            actions = compressed_traj["compressed_actions"]
+            rewards = original_traj["rewards"] if "rewards" in original_traj else []
 
             # Extract coordinates
             if states.shape[1] == 1:
-                # 1D state compression
                 x = states[:, 0]
                 y = actions[:, 0] if actions.shape[1] == 1 else np.zeros(len(states))
             else:
-                # 2D state compression - use first component vs action
                 x = states[:, 0]
                 y = actions[:, 0] if actions.shape[1] >= 1 else np.zeros(len(states))
 
-            # Plot trajectory
-            self.ax.plot(
-                x,
-                y,
-                alpha=alpha,
-                linewidth=linewidth,
-                color=colors[i] if color_by != "index" else colors[i],
+            # Ensure we have rewards for each point
+            if len(rewards) < len(x):
+                # Pad or truncate rewards
+                if len(rewards) > 0:
+                    # Use cumulative rewards if available
+                    if "cumulative_rewards" in original_traj:
+                        cum_rewards = original_traj["cumulative_rewards"]
+                        if len(cum_rewards) >= len(x):
+                            point_rewards = cum_rewards[: len(x)]
+                        else:
+                            point_rewards = np.interp(
+                                np.arange(len(x)),
+                                np.arange(len(cum_rewards)),
+                                cum_rewards,
+                            )
+                    else:
+                        # Repeat last reward or interpolate
+                        point_rewards = np.full(
+                            len(x), rewards[-1] if len(rewards) > 0 else 0
+                        )
+                else:
+                    point_rewards = np.zeros(len(x))
+            else:
+                point_rewards = rewards[: len(x)]
+
+            # Normalize rewards for coloring
+            normalized_rewards = (point_rewards - global_reward_min) / (
+                global_reward_max - global_reward_min + 1e-10
             )
+            normalized_rewards = np.clip(normalized_rewards, 0, 1)
+
+            # Create color segments for the line
+            points = np.array([x, y]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+            # Create LineCollection for gradient coloring
+            from matplotlib.collections import LineCollection
+
+            lc = LineCollection(
+                segments, cmap=reward_cmap, alpha=alpha, linewidth=linewidth
+            )
+            lc.set_array(normalized_rewards)
+            self.ax.add_collection(lc)
 
             # Add start and end markers
             if show_start_end:
-                if i == 0:  # Only label once
+                if traj_idx == 0:  # Only label once
                     self.ax.scatter(
                         x[0],
                         y[0],
                         color="green",
-                        s=80,
+                        s=100,
                         zorder=5,
                         marker="o",
                         label="Start",
@@ -566,7 +697,7 @@ class TrajectoryManifoldVisualizer:
                         x[-1],
                         y[-1],
                         color="red",
-                        s=80,
+                        s=100,
                         zorder=5,
                         marker="s",
                         label="End",
@@ -579,22 +710,39 @@ class TrajectoryManifoldVisualizer:
                         x[-1], y[-1], color="red", s=30, zorder=5, marker="s"
                     )
 
+            # Add reward colorbar for first trajectory
+            if traj_idx == 0:
+                sm = plt.cm.ScalarMappable(cmap=reward_cmap)
+                sm.set_array([global_reward_min, global_reward_max])
+                cbar = plt.colorbar(sm, ax=self.ax)
+                cbar.set_label("Instantaneous Reward", fontsize=12)
+
         self.ax.set_xlabel("Compressed State (PC1)", fontsize=12)
         self.ax.set_ylabel("Compressed Action", fontsize=12)
         self.ax.set_title(
-            "2D Trajectory Manifold: State vs Action", fontsize=14, fontweight="bold"
+            "2D Trajectory Manifold with Running Reward Coloring",
+            fontsize=14,
+            fontweight="bold",
         )
         self.ax.legend(fontsize=10)
         self.ax.grid(True, alpha=0.3)
 
-        # Add colorbar
-        if color_by in ["reward", "length"]:
-            sm = plt.cm.ScalarMappable(
-                cmap=plt.cm.viridis if color_by == "reward" else plt.cm.plasma
-            )
-            sm.set_array(rewards if color_by == "reward" else lengths)
-            cbar = plt.colorbar(sm, ax=self.ax)
-            cbar.set_label(color_label, fontsize=12)
+        # Set limits
+        all_x = []
+        all_y = []
+        for traj in compressed_trajectories:
+            states = traj["compressed_states"]
+            actions = traj["compressed_actions"]
+            if states.shape[1] >= 1:
+                all_x.extend(states[:, 0])
+            if actions.shape[1] >= 1:
+                all_y.extend(actions[:, 0])
+
+        if all_x and all_y:
+            x_padding = (np.max(all_x) - np.min(all_x)) * 0.1
+            y_padding = (np.max(all_y) - np.min(all_y)) * 0.1
+            self.ax.set_xlim(np.min(all_x) - x_padding, np.max(all_x) + x_padding)
+            self.ax.set_ylim(np.min(all_y) - y_padding, np.max(all_y) + y_padding)
 
         plt.tight_layout()
         return self.fig, self.ax
@@ -602,6 +750,7 @@ class TrajectoryManifoldVisualizer:
     def plot_3d_manifold(
         self,
         compressed_trajectories: List[Dict[str, Any]],
+        original_trajectories: List[Dict[str, Any]],
         color_by: str = "reward",
         alpha: float = 0.6,
         linewidth: float = 1.0,
@@ -611,45 +760,34 @@ class TrajectoryManifoldVisualizer:
         """
         Plot 3D manifold with 2D compressed state and 1D compressed action
         """
-        self.fig = plt.figure(figsize=(16, 12))
-        self.ax = self.fig.add_subplot(111, projection="3d")
-
         # Check if we have 2D state compression
         if compressed_trajectories[0]["compressed_states"].shape[1] < 2:
             print("Warning: Need 2D state compression for 3D plot")
             return self.fig, self.ax
 
-        # Prepare colors
-        if color_by == "reward":
-            rewards = [t["total_reward"] for t in compressed_trajectories]
-            norm_rewards = (rewards - np.min(rewards)) / (
-                np.max(rewards) - np.min(rewards) + 1e-10
-            )
-            colors = plt.cm.viridis(norm_rewards)
-            color_label = "Total Reward"
-        elif color_by == "velocity":
-            velocities = []
-            for traj in compressed_trajectories:
-                states = traj["original_states"]
-                if len(states) > 1 and states.shape[1] >= 4:
-                    # Lunar Lander: indices 2,3 are velocities
-                    vel_mag = np.mean(np.sqrt(states[:, 2] ** 2 + states[:, 3] ** 2))
-                else:
-                    vel_mag = 0
-                velocities.append(vel_mag)
-            norm_velocities = (velocities - np.min(velocities)) / (
-                np.max(velocities) - np.min(velocities) + 1e-10
-            )
-            colors = plt.cm.plasma(norm_velocities)
-            color_label = "Average Velocity"
-        else:
-            colors = plt.cm.Set3(np.linspace(0, 1, len(compressed_trajectories)))
-            color_label = "Trajectory Index"
+        # Create colormap
+        reward_cmap = plt.cm.viridis
 
-        # Plot each trajectory
-        for i, traj in enumerate(compressed_trajectories[:50]):  # Limit for clarity
-            states = traj["compressed_states"]
-            actions = traj["compressed_actions"]
+        # Track global reward range
+        all_rewards = []
+        for traj in original_trajectories:
+            if "rewards" in traj:
+                all_rewards.extend(traj["rewards"])
+
+        if not all_rewards:
+            print("No reward data available")
+            return self.fig, self.ax
+
+        global_reward_min = np.min(all_rewards)
+        global_reward_max = np.max(all_rewards)
+
+        # Plot each trajectory with gradient coloring
+        for traj_idx, (compressed_traj, original_traj) in enumerate(
+            zip(compressed_trajectories[:20], original_trajectories[:20])
+        ):
+            states = compressed_traj["compressed_states"]
+            actions = compressed_traj["compressed_actions"]
+            rewards = original_traj["rewards"] if "rewards" in original_traj else []
 
             if states.shape[1] < 2:
                 continue
@@ -659,74 +797,87 @@ class TrajectoryManifoldVisualizer:
             y = states[:, 1]  # State PC2
             z = actions[:, 0] if actions.shape[1] >= 1 else np.zeros(len(states))
 
-            # Plot 3D trajectory
-            self.ax.plot(
-                x,
-                y,
-                z,
-                alpha=alpha,
-                linewidth=linewidth,
-                color=colors[i] if color_by != "index" else colors[i],
-            )
+            # Get rewards for each point
+            if len(rewards) < len(x):
+                if len(rewards) > 0:
+                    if "cumulative_rewards" in original_traj:
+                        cum_rewards = original_traj["cumulative_rewards"]
+                        if len(cum_rewards) >= len(x):
+                            point_rewards = cum_rewards[: len(x)]
+                        else:
+                            point_rewards = np.interp(
+                                np.arange(len(x)),
+                                np.arange(len(cum_rewards)),
+                                cum_rewards,
+                            )
+                    else:
+                        point_rewards = np.full(
+                            len(x), rewards[-1] if len(rewards) > 0 else 0
+                        )
+                else:
+                    point_rewards = np.zeros(len(x))
+            else:
+                point_rewards = rewards[: len(x)]
 
-            # Add markers for first and last few trajectories
-            if i < 5:
+            # Normalize rewards
+            normalized_rewards = (point_rewards - global_reward_min) / (
+                global_reward_max - global_reward_min + 1e-10
+            )
+            normalized_rewards = np.clip(normalized_rewards, 0, 1)
+
+            # Plot with gradient coloring
+            for i in range(len(x) - 1):
+                color = reward_cmap(normalized_rewards[i])
+                self.ax.plot(
+                    [x[i], x[i + 1]],
+                    [y[i], y[i + 1]],
+                    [z[i], z[i + 1]],
+                    color=color,
+                    alpha=alpha,
+                    linewidth=linewidth,
+                )
+
+            # Add markers
+            if traj_idx < 3:
+                start_color = reward_cmap(normalized_rewards[0])
+                end_color = reward_cmap(normalized_rewards[-1])
+
                 self.ax.scatter(
                     x[0],
                     y[0],
                     z[0],
-                    color="green",
+                    color=start_color,
                     s=100,
                     marker="o",
                     depthshade=False,
-                    label="Start" if i == 0 else "",
+                    label="Start" if traj_idx == 0 else "",
                 )
                 self.ax.scatter(
                     x[-1],
                     y[-1],
                     z[-1],
-                    color="red",
+                    color=end_color,
                     s=100,
                     marker="s",
                     depthshade=False,
-                    label="End" if i == 0 else "",
+                    label="End" if traj_idx == 0 else "",
                 )
-
-            # Add direction arrow
-            if len(x) > 10:
-                mid_idx = len(x) // 2
-                dx = x[mid_idx + 1] - x[mid_idx]
-                dy = y[mid_idx + 1] - y[mid_idx]
-                dz = z[mid_idx + 1] - z[mid_idx]
-                norm = np.sqrt(dx**2 + dy**2 + dz**2)
-                if norm > 0.01:
-                    self.ax.quiver(
-                        x[mid_idx],
-                        y[mid_idx],
-                        z[mid_idx],
-                        dx / norm,
-                        dy / norm,
-                        dz / norm,
-                        length=0.1,
-                        color="black",
-                        alpha=0.5,
-                        arrow_length_ratio=0.3,
-                    )
 
         self.ax.set_xlabel("State PC1", fontsize=12, labelpad=10)
         self.ax.set_ylabel("State PC2", fontsize=12, labelpad=10)
         self.ax.set_zlabel("Action", fontsize=12, labelpad=10)
-        self.ax.set_title("3D Trajectory Manifold", fontsize=14, fontweight="bold")
+        self.ax.set_title(
+            "3D Trajectory Manifold with Running Reward Coloring",
+            fontsize=14,
+            fontweight="bold",
+        )
         self.ax.legend(fontsize=10)
 
         # Add colorbar
-        if color_by in ["reward", "velocity"]:
-            sm = plt.cm.ScalarMappable(
-                cmap=plt.cm.viridis if color_by == "reward" else plt.cm.plasma
-            )
-            sm.set_array(rewards if color_by == "reward" else velocities)
-            cbar = plt.colorbar(sm, ax=self.ax, pad=0.1)
-            cbar.set_label(color_label, fontsize=12)
+        sm = plt.cm.ScalarMappable(cmap=reward_cmap)
+        sm.set_array([global_reward_min, global_reward_max])
+        cbar = plt.colorbar(sm, ax=self.ax, pad=0.1)
+        cbar.set_label("Instantaneous Reward", fontsize=12)
 
         # Set view
         self.ax.view_init(elev=elev, azim=azim)
@@ -804,20 +955,26 @@ class TrajectoryManifoldAnalysis:
         total_timesteps=50000,
         num_trajectories=100,
         continuous=True,
-        model_path="ppo_lunar_lander",
+        model="sac",
+        env_name="ll",
     ):
-        """Train PPO and collect trajectories"""
-        print("=" * 60)
-        print("STEP 1: TRAINING PPO AND COLLECTING TRAJECTORIES")
-        print("=" * 60)
+        """Train and collect trajectories"""
+
+        if model is not None and env_name is not None:
+            model_path = model + env_name
+        else:
+            model_path = "ppo_ll"
+        print(f"TRAINING {env_name} using {model} AND COLLECTING TRAJECTORIES")
 
         # Train or load model
         try:
-            model = PPO.load(model_path)
+            model = SAC.load(model_path)
             print(f"Loaded pre-trained model from {model_path}.zip")
         except:
             print("Training new model...")
-            model = train_ppo_lunar_lander(
+            model = train(
+                model,
+                env_name,
                 total_timesteps=total_timesteps,
                 continuous=continuous,
                 save_path=model_path,
@@ -826,9 +983,9 @@ class TrajectoryManifoldAnalysis:
         # Collect trajectories
         self.storage = collect_trajectories_from_policy(
             model=model,
-            env_name="LunarLander-v3",
+            env_name="MountainCarContinuous-v0",
             num_trajectories=num_trajectories,
-            continuous=continuous,
+            # continuous=continuous,
         )
 
         # Save trajectories
@@ -843,9 +1000,7 @@ class TrajectoryManifoldAnalysis:
             print("No trajectories available. Run train_and_collect() first.")
             return
 
-        print("\n" + "=" * 60)
-        print("STEP 2: TRAJECTORY MANIFOLD ANALYSIS")
-        print("=" * 60)
+        print("TRAJECTORY MANIFOLDS")
 
         # Fit PCA
         self.pca.fit(self.storage)
@@ -868,7 +1023,7 @@ class TrajectoryManifoldAnalysis:
                 self.compressed_trajectories, color_by="reward"
             )
             plt.savefig("trajectory_manifold_2d.png", dpi=150, bbox_inches="tight")
-            plt.show()
+        #             plt.show()
 
         if plot_3d and self.state_components >= 2:
             print("\nGenerating 3D manifold plot...")
@@ -887,10 +1042,6 @@ class TrajectoryManifoldAnalysis:
         """Analyze properties of the trajectory manifold"""
         if self.compressed_trajectories is None:
             return
-
-        print("\n" + "=" * 60)
-        print("MANIFOLD PROPERTIES ANALYSIS")
-        print("=" * 60)
 
         # Collect all compressed points
         all_states = np.vstack(
@@ -941,10 +1092,6 @@ class TrajectoryManifoldAnalysis:
             print("Persistent homology not available or no trajectories")
             return
 
-        print("\n" + "=" * 60)
-        print("STEP 3: TOPOLOGICAL ANALYSIS (PERSISTENT HOMOLOGY)")
-        print("=" * 60)
-
         # Extract points for analysis
         if use_state_action:
             points = self.storage.get_state_action_pairs(max_samples=max_points)
@@ -993,15 +1140,15 @@ class TrajectoryManifoldAnalysis:
             elif dim == 1:
                 print("    Interpretation: Loops = cyclic behaviors")
 
-    def run_complete_analysis(self, total_timesteps=50000, num_trajectories=100):
-        """Run complete analysis pipeline"""
-        print("=" * 70)
-        print("COMPREHENSIVE RL TRAJECTORY MANIFOLD ANALYSIS")
-        print("=" * 70)
-
+    def run_complete_analysis(
+        self, total_timesteps=50000, num_trajectories=100, env_name=None
+    ):
         # Step 1: Train and collect
         model, storage = self.train_and_collect(
-            total_timesteps=total_timesteps, num_trajectories=num_trajectories
+            total_timesteps=total_timesteps,
+            num_trajectories=num_trajectories,
+            model="SAC",
+            env_name=env_name,
         )
 
         # Step 2: Manifold analysis
@@ -1013,16 +1160,6 @@ class TrajectoryManifoldAnalysis:
 
         # Save results
         self._save_results(model, compressed)
-
-        print("\n" + "=" * 70)
-        print("ANALYSIS COMPLETE!")
-        print("=" * 70)
-        print("\nGenerated files:")
-        print("  - ppo_lunar_lander.zip (trained model)")
-        print("  - lunar_lander_trajectories.pkl (trajectories)")
-        print("  - trajectory_manifold_2d.png (2D manifold plot)")
-        print("  - trajectory_manifold_3d.png (3D manifold plot)")
-        print("  - analysis_results.pkl (complete analysis results)")
 
         return model, storage, compressed
 
@@ -1050,23 +1187,25 @@ class TrajectoryManifoldAnalysis:
 
 
 def main():
-    """Main execution function"""
-    # Create analyzer
     analyzer = TrajectoryManifoldAnalysis(
         state_components=2,  # Compress state to 2D
         action_components=1,  # Keep action as 1D
     )
+    # storage = TrajectoryContainer()
+    # storage.load("cheetah_trajectories.pkl")
+    # analyzer.storage = storage
+
+    # analyzer.analyze_manifold(plot_2d=True, plot_3d=True)
+
+    # analyzer.analyze_topology(use_state_action=True, max_points=5000)
 
     # Run complete analysis
     analyzer.run_complete_analysis(
         total_timesteps=50000,  # Training steps
-        num_trajectories=100,  # Trajectories to collect
+        num_trajectories=50,  # Trajectories to collect
+        env_name="MountainCarContinuous-v0",
     )
 
 
 if __name__ == "__main__":
-    # Install required packages:
-    # pip install gymnasium stable-baselines3 scikit-learn matplotlib scipy
-    # Optional: pip install ripser persim
-
     main()
