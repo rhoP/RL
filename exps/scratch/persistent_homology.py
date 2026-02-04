@@ -590,14 +590,14 @@ def demonstrate_trajectory_homology():
     # Load trajectories (assuming you have saved them)
     storage = RLTrajectoryStorage()
     try:
-        storage.load("ll_ppo.pkl")
+        storage.load("trajectories/cheetah_trajectories.pkl")
         print(f"Loaded {len(storage.trajectories)} trajectories")
     except:
         print("No saved trajectories found. Please run trajectory collection first.")
         return
 
     # Create analyzer
-    analyzer = PersistentHomologyAnalyzer(max_dim=2)
+    analyzer = PersistentHomologyAnalyzer(max_dim=3)
 
     # Analyze state-action space
     print("\n" + "=" * 50)
