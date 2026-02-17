@@ -1029,6 +1029,7 @@ if __name__ == "__main__":
             "Acrobot-v1",
             "MountainCar-v0",
             "Taxi-v3",
+            "ALE/Breakout-v5",
         ],
     )
     parser.add_argument("--episodes", type=int, default=200)
