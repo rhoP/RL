@@ -1,7 +1,6 @@
 """
-Stratification Analysis for Atari Breakout
-Analyzes hierarchical structure in learned representations
-Handles visual inputs and discrete action space
+Fixed Breakout Stratification Analysis
+Properly handles Atari preprocessing and frame stacking
 """
 
 import gymnasium as gym
@@ -13,8 +12,9 @@ import cv2
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 import warnings
-
-warnings.filterwarnings("ignore")
+import ale_py
+import argparse
+import os
 
 # Core dependencies
 from sklearn.decomposition import PCA
@@ -27,9 +27,9 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.ndimage import center_of_mass
 import scipy.signal
 
-# Deep learning
-import torch.nn as nn
-import torch.nn.functional as F
+# Stable Baselines3
+from stable_baselines3.common.env_util import make_atari_env
+from stable_baselines3.common.vec_env import VecFrameStack
 
 # Optional TDA
 try:
@@ -39,6 +39,12 @@ try:
     RIPSER_AVAILABLE = True
 except ImportError:
     RIPSER_AVAILABLE = False
+warnings.filterwarnings("ignore")
+
+
+os.environ["XDG_SESSION_TYPE"] = "xcb"
+
+gym.register_envs(ale_py)
 
 
 @dataclass
@@ -48,14 +54,16 @@ class BreakoutConfig:
     # Data collection
     n_episodes: int = 50
     max_steps_per_episode: int = 10000
-    frame_stack: int = 4  # Number of stacked frames
-    frame_skip: int = 4  # Action repeat
+
+    # Atari preprocessing
+    n_stack: int = 16
+    frame_size: Tuple[int, int] = (84, 84)
 
     # Analysis methods
-    analyze_spatial: bool = True  # Ball/paddle positions
-    analyze_game_phase: bool = True  # Game progression
-    analyze_cnn_features: bool = True  # CNN layer activations
-    analyze_temporal: bool = True  # Temporal patterns
+    analyze_spatial: bool = True
+    analyze_game_phase: bool = True
+    analyze_cnn_features: bool = True
+    analyze_temporal: bool = True
 
     # Clustering parameters
     min_cluster_size: int = 50
@@ -70,165 +78,179 @@ class BreakoutConfig:
 class BreakoutFeatureExtractor:
     """
     Extracts meaningful features from Breakout observations
-    Handles both raw pixels and learned representations
+    Handles both preprocessed frames and raw pixels
     """
 
     def __init__(self, model, config: BreakoutConfig):
         self.model = model
         self.config = config
-        self.device = next(model.parameters()).device
 
-        # For tracking game objects
+        # For tracking game objects (need to work with preprocessed frames)
         self.ball_positions = []
         self.paddle_positions = []
         self.brick_counts = []
         self.scores = []
 
-        # Color thresholds for object detection (Atari specific)
-        self.ball_color = (236, 236, 236)  # White
-        self.paddle_color = (200, 72, 72)  # Red
-        self.brick_colors = [
-            (66, 72, 200),  # Blue
-            (72, 160, 72),  # Green
-            (200, 72, 72),  # Orange/Red
-            (236, 236, 236),  # White (top rows)
-        ]
+    def extract_single_observation(
+        self, obs_batch: np.ndarray, env_idx: int = 0
+    ) -> np.ndarray:
+        """
+        Extract a single observation from a batch
 
-    def detect_ball(self, frame: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
-        """Detect ball position in frame"""
-        # Convert to RGB if needed
-        if frame.shape[-1] == 3:
-            frame_rgb = frame
+        Args:
+            obs_batch: Shape (n_envs, stack, h, w) or (n_envs, stack*h*w)
+            env_idx: Which environment to take
+
+        Returns:
+            Single observation of shape (stack, h, w)
+        """
+        if len(obs_batch.shape) == 4:  # (n_envs, stack, h, w)
+            return obs_batch[env_idx]
+        elif len(obs_batch.shape) == 2:  # (n_envs, stack*h*w)
+            # Reshape
+            stack = self.config.n_stack
+            h, w = self.config.frame_size
+            return obs_batch[env_idx].reshape(stack, h, w)
         else:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            return obs_batch
 
-        # Look for white ball
-        ball_mask = cv2.inRange(frame_rgb, (230, 230, 230), (255, 255, 255))
+    def preprocess_for_detection(self, obs: np.ndarray) -> np.ndarray:
+        """
+        Convert stacked observation to RGB frame for detection
+        Takes the most recent frame from the stack
+        """
+        if len(obs.shape) == 3:  # (stack, h, w)
+            # Take the most recent frame (last in stack)
+            frame = obs[-1]
+            # Convert from grayscale [0,1] to RGB
+            if frame.max() <= 1.0:
+                frame_rgb = np.stack([frame * 255] * 3, axis=-1).astype(np.uint8)
+            else:
+                frame_rgb = np.stack([frame] * 3, axis=-1).astype(np.uint8)
+        else:
+            # Assume it's already a single frame
+            if obs.max() <= 1.0:
+                frame_rgb = np.stack([obs * 255] * 3, axis=-1).astype(np.uint8)
+            else:
+                frame_rgb = obs if obs.shape[-1] == 3 else np.stack([obs] * 3, axis=-1)
+
+        return frame_rgb
+
+    def detect_ball(
+        self, frame_rgb: np.ndarray
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Detect ball position in frame"""
+        if len(frame_rgb.shape) == 3:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = frame_rgb
+
+        # Threshold to find bright objects
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
 
         # Find contours
         contours, _ = cv2.findContours(
-            ball_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
         if contours:
-            # Get largest white object (should be ball)
+            # Get largest bright object
             largest_contour = max(contours, key=cv2.contourArea)
-            if cv2.contourArea(largest_contour) > 5:  # Minimum size
+            if cv2.contourArea(largest_contour) > 5:
                 M = cv2.moments(largest_contour)
                 if M["m00"] != 0:
                     cx = M["m10"] / M["m00"]
                     cy = M["m01"] / M["m00"]
-                    return cx / frame.shape[1], cy / frame.shape[0]  # Normalize
+                    return cx / gray.shape[1], cy / gray.shape[0]
 
         return None, None
 
-    def detect_paddle(self, frame: np.ndarray) -> Optional[float]:
+    def detect_paddle(self, frame_rgb: np.ndarray) -> Optional[float]:
         """Detect paddle position"""
-        if frame.shape[-1] == 3:
-            frame_rgb = frame
+        if len(frame_rgb.shape) == 3:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         else:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            gray = frame_rgb
 
-        # Look for red paddle
-        paddle_mask = cv2.inRange(frame_rgb, (180, 50, 50), (220, 100, 100))
+        # Paddle is at the bottom
+        height, width = gray.shape
+        bottom_region = gray[height // 2 :, :]
 
-        # Find horizontal line (paddle)
+        # Threshold for paddle
+        _, thresh = cv2.threshold(bottom_region, 150, 255, cv2.THRESH_BINARY)
+
+        # Find horizontal line
         contours, _ = cv2.findContours(
-            paddle_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
         if contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(largest_contour)
-            return (x + w / 2) / frame.shape[1]  # Normalized center
+            valid_paddles = []
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                if w > 20 and h < 10:
+                    valid_paddles.append((x + w / 2, w))
+
+            if valid_paddles:
+                best_paddle = max(valid_paddles, key=lambda p: p[1])
+                return best_paddle[0] / width
 
         return None
 
-    def count_bricks(self, frame: np.ndarray) -> int:
+    def count_bricks(self, frame_rgb: np.ndarray) -> int:
         """Count remaining bricks"""
-        if frame.shape[-1] == 3:
-            frame_rgb = frame
+        if len(frame_rgb.shape) == 3:
+            gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         else:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+            gray = frame_rgb
 
-        # Combine all brick colors
-        brick_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        for color in self.brick_colors:
-            lower = np.array([c - 20 for c in color])
-            upper = np.array([c + 20 for c in color])
-            brick_mask = cv2.bitwise_or(
-                brick_mask, cv2.inRange(frame_rgb, lower, upper)
-            )
+        # Bricks are in top 2/3
+        height, width = gray.shape
+        brick_region = gray[: int(height * 0.7), :]
+
+        # Adaptive threshold
+        _, thresh = cv2.threshold(brick_region, 100, 255, cv2.THRESH_BINARY)
 
         # Count connected components
-        num_labels, _ = cv2.connectedComponents(brick_mask)
-        return max(0, num_labels - 1)  # Subtract background
+        num_labels, _ = cv2.connectedComponents(thresh)
+        return max(0, num_labels - 1)
 
-    def extract_cnn_features(self, obs: torch.Tensor) -> np.ndarray:
-        """Extract features from CNN layers"""
+    def extract_cnn_features(self, obs: np.ndarray) -> np.ndarray:
+        """Extract features from CNN layers for a single observation"""
         with torch.no_grad():
-            # Move to device
-            if not isinstance(obs, torch.Tensor):
-                obs = torch.FloatTensor(obs).to(self.device)
-            if len(obs.shape) == 3:
-                obs = obs.unsqueeze(0)
+            # Convert to tensor and add batch dimension if needed
+            if len(obs.shape) == 3:  # (stack, h, w)
+                obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+            else:
+                obs_tensor = torch.FloatTensor(obs)
+                if len(obs_tensor.shape) == 3:
+                    obs_tensor = obs_tensor.unsqueeze(0)
 
-            # Get CNN features
+            # Normalize if needed (SB3 usually does this internally)
+            if obs_tensor.max() > 1.0:
+                obs_tensor = obs_tensor / 255.0
+
+            # Get features from CNN
             if hasattr(self.model, "policy") and hasattr(
                 self.model.policy, "cnn_extractor"
             ):
-                features = self.model.policy.cnn_extractor(obs)
+                features = self.model.policy.cnn_extractor(obs_tensor)
                 return features.cpu().numpy().flatten()
-
-            # Try to get features from different model architectures
-            elif hasattr(self.model, "cnn_extractor"):
-                features = self.model.cnn_extractor(obs)
-                return features.cpu().numpy().flatten()
-
             else:
-                return obs.cpu().numpy().flatten()
+                return obs_tensor.cpu().numpy().flatten()
 
     def get_game_phase(self, brick_count: int, ball_y: Optional[float]) -> str:
         """Determine game phase"""
         if ball_y is None:
-            return "lost_ball"
-        elif brick_count > 30:
+            return "ball_lost"
+        elif brick_count > 40:
             return "early_game"
-        elif brick_count > 15:
+        elif brick_count > 20:
             return "mid_game"
         elif brick_count > 0:
             return "late_game"
         else:
             return "game_over"
-
-    def compute_ball_trajectory_features(self, positions: List[Tuple]) -> Dict:
-        """Extract features from ball trajectory"""
-        if len(positions) < 10:
-            return {}
-
-        positions = np.array(positions)
-        x_vals, y_vals = positions[:, 0], positions[:, 1]
-
-        # Remove None values
-        valid = ~np.isnan(x_vals)
-        if np.sum(valid) < 5:
-            return {}
-
-        x_vals = x_vals[valid]
-        y_vals = y_vals[valid]
-
-        # Compute features
-        features = {
-            "x_range": np.ptp(x_vals),
-            "y_range": np.ptp(y_vals),
-            "x_velocity": np.mean(np.diff(x_vals)) if len(x_vals) > 1 else 0,
-            "y_velocity": np.mean(np.diff(y_vals)) if len(y_vals) > 1 else 0,
-            "x_variance": np.var(x_vals),
-            "y_variance": np.var(y_vals),
-            "ball_active_ratio": np.sum(valid) / len(positions),
-        }
-
-        return features
 
 
 class BreakoutStratificationAnalyzer:
@@ -236,8 +258,9 @@ class BreakoutStratificationAnalyzer:
     Main analyzer for Breakout environment
     """
 
-    def __init__(self, env: gym.Env, model, config: BreakoutConfig):
-        self.env = env
+    def __init__(self, model, config: BreakoutConfig):
+        env = make_atari_env("ALE/Breakout-v5", n_envs=1)
+        self.env = VecFrameStack(env, n_stack=16)
         self.model = model
         self.config = config
         self.extractor = BreakoutFeatureExtractor(model, config)
@@ -255,137 +278,101 @@ class BreakoutStratificationAnalyzer:
             "game_phases": [],
             "episode_ids": [],
             "timesteps": [],
+            "raw_frames": [],  # Store frames for visualization
         }
 
         # Create output directory
         if config.save_plots:
-            import os
-
             os.makedirs(config.plot_dir, exist_ok=True)
 
     def collect_data(self):
-        """Collect trajectories with game object tracking"""
+        """Collect trajectories from vectorized environment"""
         print(f"\n{'=' * 60}")
         print("COLLECTING BREAKOUT DATA")
         print(f"{'=' * 60}")
         print(f"Episodes: {self.config.n_episodes}")
+        print(f"Frame stack: {self.config.n_stack}")
+        print(f"VecEnv type: {type(self.env).__name__}")
 
-        episode_rewards = []
+        # Reset the vectorized environment
+        obs = self.env.reset()
 
-        for episode in range(self.config.n_episodes):
-            obs = self.env.reset()
-            if isinstance(obs, tuple):
-                obs = obs[0]
+        # Track episode info for each environment
+        episode_rewards = np.zeros(self.env.num_envs)
+        episode_steps = np.zeros(self.env.num_envs)
+        episode_ids = np.zeros(self.env.num_envs, dtype=int)
+        completed_episodes = 0
 
-            done = False
-            truncated = False
-            episode_reward = 0
-            step = 0
+        # For tracking per-env data
+        env_ball_positions = [[] for _ in range(self.env.num_envs)]
 
-            # Episode-specific tracking
-            episode_ball_positions = []
+        while completed_episodes < self.config.n_episodes:
+            # Get actions for all envs at once
+            actions, _ = self.model.predict(obs, deterministic=True)
 
-            while not (done or truncated):
-                # Get action from model
-                if hasattr(self.model, "predict"):
-                    action, _ = self.model.predict(obs, deterministic=True)
-                else:
-                    # Handle different model types
-                    with torch.no_grad():
-                        obs_tensor = (
-                            torch.FloatTensor(obs)
-                            .unsqueeze(0)
-                            .to(self.extractor.device)
-                        )
-                        if hasattr(self.model, "policy"):
-                            action_probs = self.model.policy(obs_tensor)
-                            action = torch.argmax(action_probs).item()
-                        else:
-                            action = self.env.action_space.sample()
+            # Step all environments
+            obs, rewards, dones, infos = self.env.step(actions)
 
-                # Extract features
-                cnn_features = self.extractor.extract_cnn_features(obs)
+            # Process each environment
+            for env_idx in range(self.env.num_envs):
+                # Extract single observation for this environment
+                single_obs = self.extractor.extract_single_observation(obs, env_idx)
+
+                # Extract CNN features
+                cnn_features = self.extractor.extract_cnn_features(single_obs)
+
+                # Convert to RGB for detection
+                frame_rgb = self.extractor.preprocess_for_detection(single_obs)
 
                 # Detect game objects
-                if len(obs.shape) == 3 and obs.shape[-1] == 3:
-                    frame = obs
-                else:
-                    # Reshape if needed
-                    frame = obs.transpose(1, 2, 0) if obs.shape[0] == 3 else obs
-                    if frame.shape[-1] != 3:
-                        frame = np.stack([frame] * 3, axis=-1)
-
-                ball_x, ball_y = self.extractor.detect_ball(frame)
-                paddle_x = self.extractor.detect_paddle(frame)
-                brick_count = self.extractor.count_bricks(frame)
+                ball_x, ball_y = self.extractor.detect_ball(frame_rgb)
+                paddle_x = self.extractor.detect_paddle(frame_rgb)
+                brick_count = self.extractor.count_bricks(frame_rgb)
                 game_phase = self.extractor.get_game_phase(brick_count, ball_y)
 
-                # Store data
-                self.data["observations"].append(
-                    obs.flatten() if hasattr(obs, "flatten") else obs
-                )
-                self.data["actions"].append(action)
+                # Store data with episode tracking
+                current_episode = episode_ids[env_idx]
+
+                self.data["observations"].append(single_obs)
+                self.data["actions"].append(actions[env_idx])
+                self.data["rewards"].append(rewards[env_idx])
+                self.data["dones"].append(dones[env_idx])
                 self.data["cnn_features"].append(cnn_features)
                 self.data["ball_positions"].append((ball_x, ball_y))
                 self.data["paddle_positions"].append(paddle_x)
                 self.data["brick_counts"].append(brick_count)
                 self.data["game_phases"].append(game_phase)
-                self.data["episode_ids"].append(episode)
-                self.data["timesteps"].append(step)
+                self.data["episode_ids"].append(current_episode)
+                self.data["timesteps"].append(episode_steps[env_idx])
 
                 if ball_y is not None:
-                    episode_ball_positions.append((ball_x, ball_y))
+                    env_ball_positions[env_idx].append((ball_x, ball_y))
 
-                # Step environment
-                step_result = self.env.step(action)
-                if len(step_result) == 4:
-                    obs, reward, done, info = step_result
-                else:
-                    obs, reward, done, truncated, info = step_result
+                # Update episode tracking
+                episode_rewards[env_idx] += rewards[env_idx]
+                episode_steps[env_idx] += 1
 
-                self.data["rewards"].append(reward)
-                self.data["dones"].append(done or truncated)
+                # Check if episode ended
+                if dones[env_idx]:
+                    completed_episodes += 1
 
-                episode_reward += reward
-                step += 1
+                    if completed_episodes % 5 == 0:
+                        print(
+                            f"Completed episode {completed_episodes}: "
+                            f"Reward={episode_rewards[env_idx]:.0f}, "
+                            f"Bricks={brick_count}, Phase={game_phase}"
+                        )
 
-                if step >= self.config.max_steps_per_episode:
-                    break
+                    # Reset tracking for this environment
+                    episode_rewards[env_idx] = 0
+                    episode_steps[env_idx] = 0
+                    episode_ids[env_idx] += 1
+                    env_ball_positions[env_idx] = []
 
-            episode_rewards.append(episode_reward)
-
-            # Store trajectory features
-            traj_features = self.extractor.compute_ball_trajectory_features(
-                episode_ball_positions
-            )
-
-            if (episode + 1) % 5 == 0:
-                print(
-                    f"Episode {episode + 1}: Reward={episode_reward:.0f}, "
-                    f"Bricks={brick_count}, Phase={game_phase}"
-                )
-
-        # Convert to numpy arrays where possible
-        for key in self.data:
-            if key not in ["game_phases", "ball_positions"]:
-                try:
-                    if self.data[key] and isinstance(
-                        self.data[key][0], (int, float, np.number)
-                    ):
-                        self.data[key] = np.array(self.data[key])
-                    elif self.data[key] and hasattr(self.data[key][0], "__array__"):
-                        self.data[key] = np.array([x.flatten() for x in self.data[key]])
-                except:
-                    pass  # Keep as list
-
-        # Summary statistics
         print(f"\n{'=' * 60}")
         print("COLLECTION SUMMARY")
         print(f"{'=' * 60}")
         print(f"Total transitions: {len(self.data['observations'])}")
-        print(
-            f"Average reward: {np.mean(episode_rewards):.1f} ± {np.std(episode_rewards):.1f}"
-        )
 
         # Game phase distribution
         phases, counts = np.unique(self.data["game_phases"], return_counts=True)
@@ -398,9 +385,7 @@ class BreakoutStratificationAnalyzer:
         return self
 
     def analyze_spatial_structure(self) -> Dict:
-        """
-        Analyze spatial distribution of ball and paddle
-        """
+        """Analyze spatial distribution of ball and paddle"""
         print(f"\n{'=' * 60}")
         print("SPATIAL STRUCTURE ANALYSIS")
         print(f"{'=' * 60}")
@@ -429,8 +414,8 @@ class BreakoutStratificationAnalyzer:
         ball_clusters = self._cluster_spatial_positions(ball_positions)
 
         # 2. Paddle-ball relationship
-        if len(paddle_positions) > 0 and len(ball_positions) > 0:
-            # Align by timestep (approximate)
+        if len(paddle_positions) > 0 and len(ball_positions) > len(paddle_positions):
+            # Align by taking min length
             min_len = min(len(paddle_positions), len(ball_positions))
             paddle_ball_diff = np.abs(
                 paddle_positions[:min_len] - ball_positions[:min_len, 0]
@@ -474,7 +459,7 @@ class BreakoutStratificationAnalyzer:
         return labels
 
     def _identify_spatial_strata(self, positions: np.ndarray) -> Dict:
-        """Identify distinct spatial strata (e.g., left/right, top/bottom)"""
+        """Identify distinct spatial strata"""
         x_coords = positions[:, 0]
         y_coords = positions[:, 1]
 
@@ -508,9 +493,7 @@ class BreakoutStratificationAnalyzer:
         return strata
 
     def analyze_game_phase_structure(self) -> Dict:
-        """
-        Analyze structure across game phases
-        """
+        """Analyze structure across game phases"""
         print(f"\n{'=' * 60}")
         print("GAME PHASE ANALYSIS")
         print(f"{'=' * 60}")
@@ -535,15 +518,21 @@ class BreakoutStratificationAnalyzer:
             # Get CNN features
             if len(self.data["cnn_features"]) > 0:
                 phase_features = np.array(self.data["cnn_features"])[mask]
-                feature_mean = np.mean(phase_features, axis=0)
+                feature_mean = (
+                    np.mean(phase_features, axis=0) if len(phase_features) > 0 else None
+                )
             else:
                 phase_features = None
                 feature_mean = None
 
             phase_stats[phase] = {
                 "count": np.sum(mask),
-                "action_distribution": np.bincount(phase_actions.astype(int))
-                / len(phase_actions),
+                "action_distribution": np.bincount(
+                    phase_actions.astype(int), minlength=4
+                )
+                / len(phase_actions)
+                if len(phase_actions) > 0
+                else np.zeros(4),
                 "mean_reward": np.mean(phase_rewards),
                 "mean_bricks": np.mean(phase_bricks),
                 "feature_mean": feature_mean,
@@ -574,9 +563,7 @@ class BreakoutStratificationAnalyzer:
         return phase_stats
 
     def analyze_cnn_feature_space(self) -> Dict:
-        """
-        Analyze structure in CNN feature space
-        """
+        """Analyze structure in CNN feature space"""
         print(f"\n{'=' * 60}")
         print("CNN FEATURE SPACE ANALYSIS")
         print(f"{'=' * 60}")
@@ -621,26 +608,31 @@ class BreakoutStratificationAnalyzer:
                 print(f"  {p1} <-> {p2}: {dist:.3f}")
 
         # 3. Cluster features
-        clustering = HDBSCAN(min_cluster_size=self.config.min_cluster_size)
-        feature_labels = clustering.fit_predict(features_pca[:, :5])
+        try:
+            clustering = HDBSCAN(min_cluster_size=self.config.min_cluster_size)
+            feature_labels = clustering.fit_predict(features_pca[:, :5])
 
-        n_clusters = len(set(feature_labels)) - (1 if -1 in feature_labels else 0)
-        n_noise = list(feature_labels).count(-1)
+            n_clusters = len(set(feature_labels)) - (1 if -1 in feature_labels else 0)
+            n_noise = list(feature_labels).count(-1)
 
-        print(f"\nFeature clustering:")
-        print(f"  Found {n_clusters} clusters")
-        print(f"  Noise: {n_noise} ({n_noise / len(feature_labels) * 100:.1f}%)")
+            print(f"\nFeature clustering:")
+            print(f"  Found {n_clusters} clusters")
+            print(f"  Noise: {n_noise} ({n_noise / len(feature_labels) * 100:.1f}%)")
 
-        # Analyze cluster composition by phase
-        print(f"\nCluster-phase composition:")
-        for cluster in range(n_clusters):
-            cluster_mask = feature_labels == cluster
-            cluster_phases = phases[cluster_mask]
-            phase_dist = {
-                p: np.sum(cluster_phases == p) / len(cluster_phases)
-                for p in unique_phases
-            }
-            print(f"  Cluster {cluster}: {phase_dist}")
+            # Analyze cluster composition by phase
+            if n_clusters > 0:
+                print(f"\nCluster-phase composition:")
+                for cluster in range(n_clusters):
+                    cluster_mask = feature_labels == cluster
+                    cluster_phases = phases[cluster_mask]
+                    phase_dist = {
+                        p: np.sum(cluster_phases == p) / len(cluster_phases)
+                        for p in unique_phases
+                    }
+                    print(f"  Cluster {cluster}: {phase_dist}")
+        except Exception as e:
+            print(f"Clustering failed: {e}")
+            feature_labels = None
 
         return {
             "features_pca": features_pca,
@@ -650,9 +642,7 @@ class BreakoutStratificationAnalyzer:
         }
 
     def analyze_temporal_patterns(self) -> Dict:
-        """
-        Analyze temporal dynamics and patterns
-        """
+        """Analyze temporal dynamics and patterns"""
         print(f"\n{'=' * 60}")
         print("TEMPORAL PATTERN ANALYSIS")
         print(f"{'=' * 60}")
@@ -663,34 +653,45 @@ class BreakoutStratificationAnalyzer:
 
         # 1. Action patterns
         action_changes = np.diff(actions)
-        action_switch_rate = np.sum(action_changes != 0) / len(action_changes)
+        action_switch_rate = (
+            np.sum(action_changes != 0) / len(action_changes)
+            if len(action_changes) > 0
+            else 0
+        )
 
         print(f"Action switch rate: {action_switch_rate:.3f}")
 
         # 2. Periodicity detection
         if len(actions) > 100:
             # Compute autocorrelation
-            autocorr = np.correlate(
-                actions - np.mean(actions), actions - np.mean(actions), mode="same"
-            )
-            autocorr = autocorr[len(autocorr) // 2 :]  # Take second half
+            try:
+                autocorr = np.correlate(
+                    actions - np.mean(actions), actions - np.mean(actions), mode="same"
+                )
+                autocorr = autocorr[len(autocorr) // 2 :]  # Take second half
 
-            # Find peaks
-            peaks = scipy.signal.find_peaks(autocorr, height=0.1 * np.max(autocorr))[0]
+                # Find peaks
+                peaks = scipy.signal.find_peaks(
+                    autocorr, height=0.1 * np.max(autocorr)
+                )[0]
 
-            if len(peaks) > 0:
-                print(f"Detected periodicity: ~{peaks[0]} steps")
+                if len(peaks) > 0:
+                    print(f"Detected periodicity: ~{peaks[0]} steps")
+            except:
+                pass
 
         # 3. Reward patterns
         # Find reward events (brick hits)
         reward_events = rewards > 0
-        reward_intervals = np.diff(np.where(reward_events)[0])
+        if np.any(reward_events):
+            reward_indices = np.where(reward_events)[0]
+            if len(reward_indices) > 1:
+                reward_intervals = np.diff(reward_indices)
 
-        if len(reward_intervals) > 0:
-            print(f"\nReward events:")
-            print(f"  Total: {np.sum(reward_events)}")
-            print(f"  Mean interval: {np.mean(reward_intervals):.1f} steps")
-            print(f"  Interval std: {np.std(reward_intervals):.1f}")
+                print(f"\nReward events:")
+                print(f"  Total: {np.sum(reward_events)}")
+                print(f"  Mean interval: {np.mean(reward_intervals):.1f} steps")
+                print(f"  Interval std: {np.std(reward_intervals):.1f}")
 
         # 4. Brick destruction patterns
         brick_changes = np.diff(brick_counts)
@@ -705,14 +706,16 @@ class BreakoutStratificationAnalyzer:
 
         return {
             "action_switch_rate": action_switch_rate,
-            "reward_intervals": reward_intervals if len(reward_intervals) > 0 else None,
-            "brick_loss_events": brick_loss_events,
+            "reward_intervals": reward_intervals
+            if "reward_intervals" in locals()
+            else None,
+            "brick_loss_events": brick_loss_events
+            if "brick_loss_events" in locals()
+            else None,
         }
 
     def topological_analysis(self) -> Optional[Dict]:
-        """
-        Persistent homology analysis of state space
-        """
+        """Persistent homology analysis of state space"""
         print(f"\n{'=' * 60}")
         print("TOPOLOGICAL DATA ANALYSIS")
         print(f"{'=' * 60}")
@@ -765,9 +768,7 @@ class BreakoutStratificationAnalyzer:
         return results
 
     def visualize_all(self, results: Dict):
-        """
-        Create comprehensive visualization suite
-        """
+        """Create comprehensive visualization suite"""
         print(f"\n{'=' * 60}")
         print("CREATING VISUALIZATIONS")
         print(f"{'=' * 60}")
@@ -812,7 +813,7 @@ class BreakoutStratificationAnalyzer:
             mask = phases == phase
             phase_actions = actions[mask]
             if len(phase_actions) > 0:
-                action_dist = np.bincount(phase_actions.astype(int)) / len(
+                action_dist = np.bincount(phase_actions.astype(int), minlength=4) / len(
                     phase_actions
                 )
                 ax2.bar(
@@ -842,7 +843,11 @@ class BreakoutStratificationAnalyzer:
 
         # 4. CNN feature space (PCA)
         ax4 = fig.add_subplot(2, 3, 4)
-        if "cnn" in results and results["cnn"] is not None:
+        if (
+            "cnn" in results
+            and results["cnn"] is not None
+            and "features_pca" in results["cnn"]
+        ):
             features_pca = results["cnn"]["features_pca"]
             phases = np.array(self.data["game_phases"])
 
@@ -1135,11 +1140,12 @@ class BreakoutStratificationAnalyzer:
         if "spatial" in results and results["spatial"]:
             if "ball_clusters" in results["spatial"]:
                 labels = results["spatial"]["ball_clusters"]
-                n_spatial = len(set(labels)) - (1 if -1 in labels else 0)
-                if n_spatial >= 2:
-                    evidence.append(
-                        f"✓ Spatial: {n_spatial} distinct ball position clusters"
-                    )
+                if len(labels) > 0:
+                    n_spatial = len(set(labels)) - (1 if -1 in labels else 0)
+                    if n_spatial >= 2:
+                        evidence.append(
+                            f"✓ Spatial: {n_spatial} distinct ball position clusters"
+                        )
 
         # 2. Game phase evidence
         if "phase_stats" in results and results["phase_stats"]:
@@ -1151,7 +1157,10 @@ class BreakoutStratificationAnalyzer:
 
         # 3. CNN feature evidence
         if "cnn" in results and results["cnn"]:
-            if "feature_labels" in results["cnn"]:
+            if (
+                "feature_labels" in results["cnn"]
+                and results["cnn"]["feature_labels"] is not None
+            ):
                 labels = results["cnn"]["feature_labels"]
                 n_feature = len(set(labels)) - (1 if -1 in labels else 0)
                 if n_feature >= 2:
@@ -1161,7 +1170,7 @@ class BreakoutStratificationAnalyzer:
 
         # 4. Temporal evidence
         if "temporal" in results and results["temporal"]:
-            if "reward_intervals" in results["temporal"]:
+            if results["temporal"].get("reward_intervals") is not None:
                 evidence.append("✓ Temporal: structured reward patterns detected")
 
         # 5. Topological evidence
@@ -1210,7 +1219,7 @@ def analyze_breakout(
     **kwargs,
 ):
     """
-    Convenience function to analyze Breakout policy
+    Analyze Breakout policy with proper Atari preprocessing
 
     Args:
         model_path: Path to saved model
@@ -1219,8 +1228,9 @@ def analyze_breakout(
         n_episodes: Number of episodes to collect
         **kwargs: Additional config parameters
     """
-    # Create environment with proper wrappers for Atari
-    env = gym.make(env_name, render_mode="rgb_array")
+    # Create environment with proper Atari wrappers
+    env = make_atari_env(env_name, n_envs=16, seed=69)
+    env = VecFrameStack(env, n_stack=16)
 
     # Load model
     if model_type == "DQN":
@@ -1242,28 +1252,29 @@ def analyze_breakout(
     config = BreakoutConfig(n_episodes=n_episodes, **kwargs)
 
     # Run analysis
-    analyzer = BreakoutStratificationAnalyzer(env, model, config)
+    analyzer = BreakoutStratificationAnalyzer(model, config)
     results = analyzer.run_analysis()
 
     return results, analyzer
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(
         description="Analyze Breakout policy stratification"
     )
     parser.add_argument(
-        "--model_path", type=str, required=True, help="Path to trained model"
+        "--model_path",
+        type=str,
+        default="pre_trained/A2C_ALE/Breakout-v5",
+        help="Path to trained model",
     )
     parser.add_argument(
-        "--env", type=str, default="Breakout-v5", help="Environment name"
+        "--env", type=str, default="ALE/Breakout-v5", help="Environment name"
     )
     parser.add_argument(
         "--model_type",
         type=str,
-        default="DQN",
+        default="A2C",
         choices=["DQN", "PPO", "A2C"],
         help="Type of model",
     )
