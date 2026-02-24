@@ -16,8 +16,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
 from sklearn.manifold import TSNE
 import warnings
-
-warnings.filterwarnings("ignore")
+from scipy.spatial.distance import directed_hausdorff
+from scipy.stats import ks_2samp, entropy
 
 # Stable Baselines3 imports
 from stable_baselines3 import PPO, A2C
@@ -30,6 +30,12 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import torch as th
 import matplotlib.gridspec as gridspec
+from cluster_transitions import (
+    CombinatorialClusterTransitionAnalyzer as ClusterTransitionAnalyzer,
+    analyze_cluster_transitions,
+)
+
+warnings.filterwarnings("ignore")
 
 
 class ContinuousStateCluster:
@@ -1199,6 +1205,30 @@ def load_and_visualize_saved_model(model_path: str, algorithm: str = "PPO"):
         save_path=f"lunar_analysis/{algorithm.lower()}_loaded_visualization.png"
     )
 
+    # Analyze transitions for PPO
+    print("\n" + "=" * 80)
+    print("PPO TRANSITION ANALYSIS")
+    print("=" * 80)
+    ppo_trans_analyzer = analyze_cluster_transitions(model, analyzer, trajectories, env)
+
+    # Compare flow probabilities for specific paths
+    print("\n" + "=" * 80)
+    print("PATH PROBABILITY COMPARISON")
+    print("=" * 80)
+
+    # Find interesting paths (e.g., start to landing)
+    start_cluster = analyzer.state_to_cluster.get(0)  # Assuming state 0 is start
+    goal_cluster = analyzer.state_to_cluster.get(max(analyzer.state_to_cluster.keys()))
+
+    if start_cluster is not None and goal_cluster is not None:
+        path = [start_cluster, goal_cluster]  # Simplified, would need actual path
+
+        ppo_path_probs = ppo_trans_analyzer.compute_path_probabilities(path)
+
+        print(f"\nPath C{start_cluster} → C{goal_cluster}:")
+        print(f"  PPO theoretical: {ppo_path_probs['theoretical']:.4f}")
+        print(f"  PPO empirical: {ppo_path_probs['empirical']:.4f}")
+
     return analyzer
 
 
@@ -1207,10 +1237,10 @@ if __name__ == "__main__":
     # pip install stable-baselines3[extra] gymnasium[box2d] scikit-learn
 
     # Run comparison on v3
-    results = run_lunar_lander_comparison()
+    # results = run_lunar_lander_comparison()
 
     # Example: Load and visualize a saved model
-    # analyzer = load_and_visualize_saved_model("models/ppo_lunar_lander_v3.zip", "PPO")
+    analyzer = load_and_visualize_saved_model("models/ppo_lunar_lander_v3.zip", "PPO")
 
     print("\n" + "=" * 80)
     print("EXPERIMENT COMPLETE")

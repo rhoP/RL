@@ -3,22 +3,18 @@ from stable_baselines3 import PPO, DQN, A2C
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_util import make_atari_env
 import argparse
-import ale_py
 
 
-def test(env_id, agent_id, policy):
-    env = make_atari_env(
-        env_id, n_envs=1, seed=69, wrapper_kwargs=dict(terminal_on_life_loss=False)
-    )
-    obs = env.reset()
-    model = eval(agent_id)(policy, env)
-    model.load(f"pre_trained/{agent_id}_{env_id}")
+def test(env_id, agent_id, model_path):
+    env = gym.make(env_id, render_mode="human")
+    obs, _ = env.reset()
 
-    # evaluate_policy(model, env, n_eval_episodes=10)
-    while True:
-        action, _states = model.predict(obs, deterministic=False)
-        obs, rewards, dones, info = env.step(action)
-        env.render("human")
+    model = eval(agent_id).load(model_path)
+
+    evaluate_policy(model, env, n_eval_episodes=10)
+    # while True:
+    #    action, _states = model.predict(obs, deterministic=False)
+    #    obs, rewards, terminated, truncated, info = env.step(action)
 
 
 if __name__ == "__main__":
@@ -26,7 +22,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--env",
         type=str,
-        default="ALE/Breakout-v5",
+        default="LunarLander-v3",
         choices=[
             "LunarLander-v3",
             "CartPole-v1",
@@ -41,7 +37,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--policy", type=str, default="CnnPolicy", choices=["MlpPolicy", "CnnPolicy"]
     )
+    parser.add_argument("--model_path", type=str, required=True)
 
     args = parser.parse_args()
 
-    test(args.env, args.agent, args.policy)
+    test(args.env, args.agent, args.model_path)
