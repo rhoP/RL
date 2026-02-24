@@ -1,0 +1,57 @@
+
+LUNAR LANDER v3 CLUSTER ANALYSIS REPORT
+================================================================================
+
+Environment: LunarLander-v3
+State Dimensions: 8 (position, velocity, angle, contacts)
+Actions: 4 discrete engines
+
+ALGORITHM COMPARISON
+--------------------------------------------------------------------------------
+
+PPO (Proximal Policy Optimization):
+  - Training Time: 162.49s
+  - Mean Reward: 240.95
+  - Clusters: 12
+  - Avg Cluster Size: 1345.2
+  - Avg Cluster Value: 2.554
+  - Avg Cluster Spread: 0.456
+  - Bottleneck Clusters: [5, 7, 10]
+  - Absorption Clusters: [2, 7, 8, 10]
+
+A2C (Advantage Actor Critic):
+  - Training Time: 178.96s
+  - Mean Reward: 155.49
+  - Clusters: 12
+  - Avg Cluster Size: 1284.4
+  - Avg Cluster Value: 0.895
+  - Avg Cluster Spread: 0.439
+  - Bottleneck Clusters: [0, 10]
+  - Absorption Clusters: [0, 2, 4, 6, 8]
+
+KEY INSIGHTS
+--------------------------------------------------------------------------------
+
+1. State Space Coverage:
+   - PPO clusters are less compact (spread 0.456 vs 0.439)
+   - This suggests PPO explores more broadly
+
+2. Action Preferences:
+   - PPO dominant actions: Fire right engine, Fire main engine, Fire main engine, Fire main engine, Fire main engine...
+   - A2C dominant actions: Fire main engine, Fire right engine, Fire main engine, Fire main engine, Fire left engine...
+
+3. Value Distribution:
+   - PPO value range: [-0.60, 4.15]
+   - A2C value range: [-0.26, 1.62]
+
+4. Transition Dynamics:
+   - PPO has 3 bottleneck clusters (critical decision points)
+   - A2C has 2 bottleneck clusters
+
+Files Generated:
+  - models/ppo_lunar_lander_v3.zip
+  - models/a2c_lunar_lander_v3.zip
+  - lunar_analysis/ppo_clusters.json
+  - lunar_analysis/a2c_clusters.json
+  - lunar_analysis/*_2d.png (t-SNE visualizations)
+  - lunar_analysis/*_3d.png (3D PCA visualizations)

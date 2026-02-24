@@ -1,0 +1,127 @@
+{
+  "cluster_counts": {
+    "value_clusters": 5,
+    "action_clusters": 9
+  },
+  "agreement": {
+    "pairwise_coherence": 0.7666666666666667
+  },
+  "value_composition": {
+    "AC0": {
+      "action": 0,
+      "mean_value": 0.32686946772601333,
+      "std_value": 0.23141876911643441,
+      "min_value": 0.0,
+      "max_value": 0.5044192060322679
+    },
+    "AC1": {
+      "action": 0,
+      "mean_value": 0.15086145835436113,
+      "std_value": 0.23931613482995634,
+      "min_value": 0.0,
+      "max_value": 0.662348458421935
+    },
+    "AC2": {
+      "action": 0,
+      "mean_value": 0.0,
+      "std_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 0.0
+    },
+    "AC3": {
+      "action": 1,
+      "mean_value": 0.22202457641208176,
+      "std_value": 0.0,
+      "min_value": 0.22202457641208176,
+      "max_value": 0.22202457641208176
+    },
+    "AC4": {
+      "action": 1,
+      "mean_value": 0.603420666630558,
+      "std_value": 0.0,
+      "min_value": 0.603420666630558,
+      "max_value": 0.603420666630558
+    },
+    "AC5": {
+      "action": 1,
+      "mean_value": 0.9547834377393281,
+      "std_value": 0.0,
+      "min_value": 0.9547834377393281,
+      "max_value": 0.9547834377393281
+    },
+    "AC6": {
+      "action": 2,
+      "mean_value": 0.21224098273149136,
+      "std_value": 0.0,
+      "min_value": 0.21224098273149136,
+      "max_value": 0.21224098273149136
+    },
+    "AC7": {
+      "action": 2,
+      "mean_value": 0.6532008048252674,
+      "std_value": 0.0,
+      "min_value": 0.6532008048252674,
+      "max_value": 0.6532008048252674
+    },
+    "AC8": {
+      "action": 3,
+      "mean_value": 0.5646188082479956,
+      "std_value": 0.0,
+      "min_value": 0.5646188082479956,
+      "max_value": 0.5646188082479956
+    }
+  },
+  "action_composition": {
+    "VC0": {
+      "dominant_action": 0,
+      "action_distribution": {
+        "0": 0.625,
+        "1": 0.1875,
+        "2": 0.125,
+        "3": 0.0625
+      },
+      "value_level": 0.0,
+      "is_high_value": true
+    },
+    "VC1": {
+      "dominant_action": 0,
+      "action_distribution": {
+        "0": 0.4,
+        "1": 0.3,
+        "2": 0.2,
+        "3": 0.1
+      },
+      "value_level": 0.1909566875478656,
+      "is_high_value": true
+    },
+    "VC2": {
+      "dominant_action": 0,
+      "action_distribution": {
+        "0": 0.42857142857142855,
+        "3": 0.14285714285714285,
+        "1": 0.2857142857142857,
+        "2": 0.14285714285714285
+      },
+      "value_level": 0.3819133750957312,
+      "is_high_value": true
+    },
+    "VC3": {
+      "dominant_action": 1,
+      "action_distribution": {
+        "1": 0.5,
+        "0": 0.25,
+        "2": 0.25
+      },
+      "value_level": 0.5728700626435967,
+      "is_high_value": true
+    },
+    "VC4": {
+      "dominant_action": 1,
+      "action_distribution": {
+        "1": 1.0
+      },
+      "value_level": 0.7638267501914624,
+      "is_high_value": true
+    }
+  }
+}

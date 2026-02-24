@@ -1,0 +1,10 @@
+{
+    "experiment1": {
+        "final_success_rate": 0.75,
+        "parameters": {
+            "map": "4x4",
+            "is_slippery": true,
+            "episodes": 10000
+        }
+    }
+}

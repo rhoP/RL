@@ -1,0 +1,127 @@
+{
+  "cluster_counts": {
+    "value_clusters": 5,
+    "action_clusters": 9
+  },
+  "agreement": {
+    "pairwise_coherence": 0.7416666666666667
+  },
+  "value_composition": {
+    "AC0": {
+      "action": 0,
+      "mean_value": 0.15099178731204135,
+      "std_value": 0.1872604145720775,
+      "min_value": 0.0,
+      "max_value": 0.48756944274370967
+    },
+    "AC1": {
+      "action": 0,
+      "mean_value": 0.0,
+      "std_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 0.0
+    },
+    "AC2": {
+      "action": 1,
+      "mean_value": 0.2795704053712046,
+      "std_value": 0.0,
+      "min_value": 0.2795704053712046,
+      "max_value": 0.2795704053712046
+    },
+    "AC3": {
+      "action": 1,
+      "mean_value": 0.47409920847018205,
+      "std_value": 0.0,
+      "min_value": 0.47409920847018205,
+      "max_value": 0.47409920847018205
+    },
+    "AC4": {
+      "action": 2,
+      "mean_value": 0.2231289217515571,
+      "std_value": 0.0,
+      "min_value": 0.2231289217515571,
+      "max_value": 0.2231289217515571
+    },
+    "AC5": {
+      "action": 2,
+      "mean_value": 0.6885592400544449,
+      "std_value": 0.06738343474345398,
+      "min_value": 0.6211758053109909,
+      "max_value": 0.7559426747978989
+    },
+    "AC6": {
+      "action": 3,
+      "mean_value": 0.2382980101616466,
+      "std_value": 0.0,
+      "min_value": 0.2382980101616466,
+      "max_value": 0.2382980101616466
+    },
+    "AC7": {
+      "action": 3,
+      "mean_value": 0.21942576312050993,
+      "std_value": 0.0,
+      "min_value": 0.21942576312050993,
+      "max_value": 0.21942576312050993
+    },
+    "AC8": {
+      "action": 3,
+      "mean_value": 0.4091513600826949,
+      "std_value": 0.0,
+      "min_value": 0.4091513600826949,
+      "max_value": 0.4091513600826949
+    }
+  },
+  "action_composition": {
+    "VC0": {
+      "dominant_action": 0,
+      "action_distribution": {
+        "1": 0.125,
+        "3": 0.1875,
+        "2": 0.1875,
+        "0": 0.5
+      },
+      "value_level": 0.0,
+      "is_high_value": true
+    },
+    "VC1": {
+      "dominant_action": 3,
+      "action_distribution": {
+        "1": 0.18181818181818182,
+        "3": 0.2727272727272727,
+        "2": 0.2727272727272727,
+        "0": 0.2727272727272727
+      },
+      "value_level": 0.1511885349595798,
+      "is_high_value": true
+    },
+    "VC2": {
+      "dominant_action": 0,
+      "action_distribution": {
+        "0": 0.3333333333333333,
+        "3": 0.16666666666666666,
+        "1": 0.16666666666666666,
+        "2": 0.3333333333333333
+      },
+      "value_level": 0.3023770699191596,
+      "is_high_value": true
+    },
+    "VC3": {
+      "dominant_action": 2,
+      "action_distribution": {
+        "1": 0.25,
+        "0": 0.25,
+        "2": 0.5
+      },
+      "value_level": 0.45356560487873937,
+      "is_high_value": true
+    },
+    "VC4": {
+      "dominant_action": 2,
+      "action_distribution": {
+        "2": 1.0
+      },
+      "value_level": 0.6047541398383192,
+      "is_high_value": true
+    }
+  }
+}
