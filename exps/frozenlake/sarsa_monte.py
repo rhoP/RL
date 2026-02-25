@@ -9,6 +9,40 @@ from typing import Dict, List, Tuple, Optional, Set, Any
 import json
 from dataclasses import dataclass, asdict
 import time
+from cluster_refinement import FrozenLakeClusterRefinement
+import random
+
+
+# Seeds
+def set_all_seeds(seed: int = 42):
+    """
+    Set all possible seeds for maximum reproducibility
+
+    Args:
+        seed: The master seed to use
+    """
+    print(f"\nSetting all seeds to {seed} for reproducibility")
+
+    # Python random
+    random.seed(seed)
+
+    # NumPy
+    np.random.seed(seed)
+
+    # Gymnasium environment seeds
+    # This will be set per environment when created
+
+    # Python hash seed (for dictionary iteration order)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    print(f"✓ Python random seed: {seed}")
+    print(f"✓ NumPy seed: {seed}")
+    print(f"✓ PyTorch seed: {seed}")
+    print(f"✓ PYTHONHASHSEED: {seed}")
+
+
+seed = 69
+set_all_seeds(seed)
 
 
 @dataclass
@@ -138,7 +172,7 @@ class FrozenLakeSarsa:
         success_window = deque(maxlen=100)
 
         for episode in range(self.episodes):
-            state, _ = self.env.reset()
+            state, _ = self.env.reset(seed=np.random.randint(6769))
             action = self.choose_action(state)
             done = False
             total_reward = 0
@@ -328,7 +362,7 @@ class FrozenLakeMonteCarlo:
     def generate_episode(self) -> List[Tuple]:
         """Generate one episode following current policy"""
         episode = []
-        state, _ = self.env.reset()
+        state, _ = self.env.reset(seed=np.random.randint(6769))
         done = False
 
         while not done:
@@ -1109,6 +1143,46 @@ def run_comparison_experiment():
             return obj
 
         json.dump(convert(results), f, indent=2)
+
+    """
+    Run complete refinement experiment with SARSA and Monte Carlo
+    """
+    print("\n" + "=" * 70)
+    print("CLUSTER REFINEMENT WITH BELLMAN OPTIMALITY")
+    print("=" * 70)
+
+    # Create refinement analyzer
+    analyzer = FrozenLakeClusterRefinement(map_name="4x4")
+
+    # Load or train agents (using your existing implementations)
+    # For demonstration, I'll create synthetic agents with different policies
+
+    # agent1 = sarsa_monte.FrozenLakeSarsa()
+    # agent2 = sarsa_monte.FrozenLakeMonteCarlo()
+
+    # Extract clusterings
+    print("\nExtracting clusterings from agents...")
+    clustering1 = analyzer.load_clustering_from_agent(sarsa_agent, "SARSA")
+    clustering2 = analyzer.load_clustering_from_agent(mc_agent, "MC")
+
+    analyzer.set_clusterings(clustering1, clustering2)
+
+    # Compute refinement
+    refinement = analyzer.compute_coarsest_common_refinement()
+
+    # Compute Q-values for refinement
+    q_refinement = analyzer.compute_refinement_q_values(sarsa_agent, mc_agent)
+
+    # Compute superior policy
+    superior_policy = analyzer.compute_superior_policy()
+
+    # Visualize
+    analyzer.visualize_refinement(save_path="refinement_analysis.png")
+
+    # Print analysis
+    analyzer.print_refinement_analysis()
+
+    # return analyzer
 
     print("\n" + "=" * 70)
     print("EXPERIMENT COMPLETE")

@@ -1,43 +1,38 @@
 {
   "sarsa": {
-    "final_success_rate": 0.69,
-    "training_time": 1.7336642742156982,
-    "n_clusters": 6,
+    "final_success_rate": 0.6,
+    "training_time": 5.404066562652588,
+    "n_clusters": 7,
     "cluster_sizes": [
-      11,
+      10,
+      1,
       1,
       1,
       1,
       1,
       1
     ],
-    "avg_cluster_size": 2.6666666666666665,
+    "avg_cluster_size": 2.2857142857142856,
     "optimal_path": [
       0
     ],
     "path_probability": 0
   },
   "mc": {
-    "final_success_rate": 0.08,
-    "training_time": 3.182018995285034,
-    "n_clusters": 8,
+    "final_success_rate": 0.02,
+    "training_time": 4.647885322570801,
+    "n_clusters": 7,
     "cluster_sizes": [
-      1,
-      6,
-      1,
-      1,
-      2,
-      1,
+      5,
       3,
-      1
-    ],
-    "avg_cluster_size": 2.0,
-    "optimal_path": [
-      0,
+      1,
       4,
-      6,
+      1,
+      1,
       1
     ],
-    "path_probability": 0.3696675191815857
+    "avg_cluster_size": 2.2857142857142856,
+    "optimal_path": [],
+    "path_probability": 0
   }
 }
