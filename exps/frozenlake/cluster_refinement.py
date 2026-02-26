@@ -35,6 +35,7 @@ class FrozenLakeClusterRefinement:
         self.refinement = None  # Coarsest common refinement
         self.q_refinement = None  # Q-values on refinement
         self.superior_policy = None  # Improved policy
+        self.state_to_cluster = None
 
     def load_clustering_from_agent(self, agent, name: str = "agent") -> Dict:
         """
@@ -189,6 +190,7 @@ class FrozenLakeClusterRefinement:
             "n_clusters": len(refined_clusters),
             "agreement_rate": np.mean([c["agreement"] for c in refined_clusters]),
         }
+        self.state_to_cluster = state_to_refined
 
         print(f"Created {self.refinement['n_clusters']} refined clusters")
         print(f"Action agreement rate: {self.refinement['agreement_rate']:.3f}")

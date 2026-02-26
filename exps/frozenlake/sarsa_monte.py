@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass, asdict
 import time
 from cluster_refinement import FrozenLakeClusterRefinement
+from meta_learning import run_meta_learning_experiment
 import random
 
 
@@ -41,7 +42,7 @@ def set_all_seeds(seed: int = 42):
     print(f"✓ PYTHONHASHSEED: {seed}")
 
 
-seed = 69
+seed = 67
 set_all_seeds(seed)
 
 
@@ -1183,6 +1184,13 @@ def run_comparison_experiment():
     analyzer.print_refinement_analysis()
 
     # return analyzer
+
+    meta_learner = run_meta_learning_experiment(
+        refinement_analyzer=analyzer,
+        superior_policy=superior_policy,
+        exploration_prob=0.1,
+        n_episodes=1000,
+    )
 
     print("\n" + "=" * 70)
     print("EXPERIMENT COMPLETE")
